@@ -327,6 +327,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
+    build: 'dps-xml-v1.01-20261107',
   });
 });
 
