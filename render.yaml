@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: cortevo-nfse-gateway
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: GATEWAY_API_KEY
+        generateValue: true
+      - key: GATEWAY_STATELESS
+        value: "1"
+      - key: NFSE_AMBIENTE
+        value: restrita
+      - key: CERT_DIR
+        value: /tmp/certs

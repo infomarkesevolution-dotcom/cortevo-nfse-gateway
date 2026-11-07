@@ -1,0 +1,19 @@
+{
+  "name": "cortevo-nfse-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Gateway mTLS para emissao de NFS-e padrao nacional (nfse.gov.br / SefinNacional) usado pelo Cortevo Barber",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^4.21.1",
+    "node-forge": "^1.3.1"
+  }
+}
