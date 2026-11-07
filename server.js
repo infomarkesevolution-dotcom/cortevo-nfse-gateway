@@ -327,7 +327,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-json-v1.01-20261107d',
+    build: 'dps-ok-v1.01-20261108',
   });
 });
 
@@ -389,9 +389,28 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
     }
 
     if (!req.body.tpAmb) req.body.tpAmb = TP_AMB;
-    const dps = gerarDpsAssinada(req.body, src);
 
-    let out = await postDps(src, dps.gzip);
+    // Alguns municipios nao aceitam IM (E0120) e MEI/Simples nao aceita
+    // aliquota (E0600). Tentamos variantes antes de devolver erro.
+    const variantes = [req.body];
+    if (req.body?.prestador?.inscricao_municipal) {
+      const semIm = { ...req.body, prestador: { ...req.body.prestador, inscricao_municipal: null } };
+      variantes.push(semIm);
+    }
+    const val = req.body?.valores || {};
+    if (val.iss_aliquota) {
+      variantes.push({ ...(variantes[variantes.length - 1]), valores: { ...val, iss_aliquota: 0 } });
+    }
+
+    let out = null;
+    let dps = null;
+    for (const corpo of variantes) {
+      dps = gerarDpsAssinada(corpo, src);
+      out = await postDps(src, dps.gzip);
+      const bruto = typeof out.body === 'string' ? out.body : JSON.stringify(out.body || '');
+      const erroDeRegra = /E0120|E0600/.test(bruto);
+      if ((out.status === 200 || out.status === 201) || !erroDeRegra) break;
+    }
 
     const autorizada = out.status === 200 || out.status === 201;
     const txt = typeof out.body === 'string' ? out.body : JSON.stringify(out.body || {});

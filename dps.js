@@ -6,6 +6,7 @@
  * NAO JSON. Este modulo existe para isso.
  */
 import forge from 'node-forge';
+import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { SignedXml } from 'xml-crypto';
@@ -33,13 +34,10 @@ function soData(v) {
 
 function soDh(v) {
   if (v && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(-03:00|Z)$/.test(v)) return v;
-  const d = new Date();
-  const off = -d.getTimezoneOffset();
-  const sinal = off >= 0 ? '+' : '-';
-  const hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, '0');
-  const mm = String(Math.abs(off) % 60).padStart(2, '0');
-  const iso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
-  return `${iso}${sinal}${hh}:${mm}`;
+  // Sefin recusa dhEmi no futuro (E0008): gera em horario de Brasilia, 1 min atras
+  const t = new Date(Date.now() - 60 * 1000 - 3 * 3600 * 1000);
+  const iso = t.toISOString().slice(0, 19);
+  return `${iso}-03:00`;
 }
 
 /** Id da DPS: DPS + cLocEmi(7) + tpInsc(1) + inscricao(14) + serie(5) + numero(15) */
@@ -79,7 +77,10 @@ export function buildDpsXml(p) {
   const numero = String(p.numero || '1');
   const id = idDps({ cLocEmi, tpInsc: 2, inscricao: prestDoc, serie, numero });
 
-  const opSimpNac = String(prest.op_simples_nacional ?? '2'); // 2 = MEI
+  const regime = String(prest.op_simples_nacional ?? '2').toUpperCase();
+  const opSimpNac = ({ MEI: '2', SIMPLES: '3', 'SIMPLES NACIONAL': '3', SN: '3', ME: '3', EPP: '3', NAO: '1', 'NAO OPTANTE': '1', NORMAL: '1' })[regime] || String(prest.op_simples_nacional ?? '2');
+  // MEI e Simples nao informam aliquota (E0600)
+  const permiteAliquota = opSimpNac === '1';
   const regEspTrib = String(prest.regime_especial ?? '0'); // 0 = nenhum
 
   const partes = [];
@@ -89,7 +90,9 @@ export function buildDpsXml(p) {
   partes.push(`<serie>${esc(serie)}</serie>`);
   partes.push(`<nDPS>${esc(numero)}</nDPS>`);
   partes.push(`<dCompet>${esc(soData(p.competencia))}</dCompet>`);
-  partes.push(`<tpEmit>1</tpEmit>`);
+  partes.push(`<tpEmit>${esc(String(p.tpEmit || '1'))}</tpEmit>`);
+  // finalidade da NFS-e (RTC): 0 = NFS-e regular. Posicao exige vir logo apos tpEmit.
+  partes.push(`<finNFSe>${esc(String(p.finNFSe || '0'))}</finNFSe>`);
   partes.push(`<cLocEmi>${esc(cLocEmi)}</cLocEmi>`);
 
   // prestador
@@ -135,7 +138,7 @@ export function buildDpsXml(p) {
   partes.push(`<serv>${sv.join('')}</serv>`);
 
   // valores
-  const aliq = Number(val.iss_aliquota || 0);
+  const aliq = permiteAliquota ? Number(val.iss_aliquota || 0) : 0;
   const v = ['<vServPrest>', `<vServ>${dec(val.total_centavos)}</vServ>`, '</vServPrest>'];
   v.push('<trib><tribMun>');
   v.push('<tribISSQN>1</tribISSQN>');
@@ -146,14 +149,10 @@ export function buildDpsXml(p) {
   v.push('</trib>');
   partes.push(`<valores>${v.join('')}</valores>`);
 
-  const xml =
-    `<DPS xmlns="${NS}" versao="${VERSAO}">` +
-    `<infDPS Id="${id}">` +
-    partes.join('') +
-    `</infDPS>` +
-    `</DPS>`;
+  const infCanon = `<infDPS xmlns="${NS}" Id="${id}">` + partes.join('') + `</infDPS>`;
+  const xml = `<DPS xmlns="${NS}" versao="${VERSAO}">` + infCanon + `</DPS>`;
 
-  return { xml, id, cLocEmi, serie, numero };
+  return { xml, infCanon, id, cLocEmi, serie, numero };
 }
 
 /** Cert + chave em PEM a partir do .pfx (A1) */
@@ -186,38 +185,67 @@ export function pemFromPfx(pfxBuffer, passphrase) {
   };
 }
 
-/** Assina a DPS (XMLDSig enveloped, RSA-SHA256, C14N 1.0) */
-export function assinarDps(xml, { privateKeyPem, certPem }) {
-  const doc = new DOMParser().parseFromString(xml, 'text/xml');
-  const sig = new SignedXml({
-    prefix: 'ds',
-    privateKey: privateKeyPem,
-    publicCert: certPem,
-    signatureAlgorithm: 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256',
-    canonicalizationAlgorithm: 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315',
-  });
+/**
+ * Assina a DPS (XMLDSig enveloped, RSA-SHA256, C14N 1.0).
+ * O C14N e calculado de forma deterministica: geramos o XML sem tags
+ * auto-fechadas e com os namespaces declarados, entao a forma canonica do
+ * infDPS e exatamente a string gerada (era isso que quebrava a assinatura).
+ */
+export function assinarDps(xmlOuInf, { privateKeyPem, certPem }) {
+  const DSIG = 'http://www.w3.org/2000/09/xmldsig#';
+  let infCanon = xmlOuInf;
+  if (!/^<infDPS/.test(infCanon)) {
+    const m = infCanon.match(/<infDPS[\s\S]*<\/infDPS>/);
+    if (!m) throw new Error('infDPS nao encontrado para assinar');
+    infCanon = m[0];
+  }
+  const id = (infCanon.match(/Id="([^"]+)"/) || [])[1];
+  if (!id) throw new Error('atributo Id ausente no infDPS');
 
-  sig.addReference({
-    xpath: "/*[local-name()='DPS']/*[local-name()='infDPS']",
-    digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256',
-    transforms: [
-      'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
-      'http://www.w3.org/TR/2001/REC-xml-c14n-20010315',
-    ],
-  });
+  const digest = crypto.createHash('sha256').update(infCanon, 'utf8').digest('base64');
 
-  sig.computeSignature(new XMLSerializer().serializeToString(doc), {
-    location: { reference: "/*[local-name()='DPS']", action: 'append' },
-  });
+  const signedInfo =
+    `<SignedInfo xmlns="${DSIG}">` +
+    `<CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"></CanonicalizationMethod>` +
+    `<SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"></SignatureMethod>` +
+    `<Reference URI="#${id}">` +
+    `<Transforms>` +
+    `<Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"></Transform>` +
+    `<Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"></Transform>` +
+    `</Transforms>` +
+    `<DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"></DigestMethod>` +
+    `<DigestValue>${digest}</DigestValue>` +
+    `</Reference>` +
+    `</SignedInfo>`;
 
-  return sig.getSignedXml();
+  const assinatura = crypto
+    .createSign('RSA-SHA256')
+    .update(signedInfo, 'utf8')
+    .sign(privateKeyPem, 'base64');
+
+  const bloco = String(certPem).match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/);
+  if (!bloco) throw new Error('certificado PEM invalido');
+  const certBody = bloco[0]
+    .replace(/-----BEGIN CERTIFICATE-----/, '')
+    .replace(/-----END CERTIFICATE-----/, '')
+    .replace(/\s+/g, '');
+
+  const signature =
+    `<Signature xmlns="${DSIG}">` +
+    signedInfo +
+    `<SignatureValue>${assinatura}</SignatureValue>` +
+    `<KeyInfo><X509Data><X509Certificate>${certBody}</X509Certificate></X509Data></KeyInfo>` +
+    `</Signature>`;
+
+  const final = `<DPS xmlns="${NS}" versao="${VERSAO}">` + infCanon + signature + `</DPS>`;
+  return final;
 }
 
 /** Gera a DPS assinada e comprimida (gzip), pronta para POST /nfse */
 export function gerarDpsAssinada(payload, src) {
-  const { xml, id } = buildDpsXml(payload);
+  const { infCanon, id } = buildDpsXml(payload);
   const pems = pemFromPfx(src.pfx, src.passphrase);
-  const assinada = assinarDps(xml, pems);
+  const assinada = assinarDps(infCanon, pems);
   // a Sefin exige declaracao de codificacao UTF-8 (E1229 sem ela)
   const comDecl = /^<\?xml/i.test(assinada)
     ? assinada
