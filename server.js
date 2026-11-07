@@ -319,6 +319,11 @@ async function callSefin({ src, method, url, data }) {
 
 /* ------------------------------- rotas ------------------------------- */
 
+const ULTIMAS = [];
+app.get('/debug/ultimas', requireApiKey, (_req, res) => {
+  res.json({ ok: true, total: ULTIMAS.length, itens: ULTIMAS.slice(-5) });
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
@@ -327,7 +332,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-ok-v1.01-20261108',
+    build: 'dps-ok-v1.01-20261108b',
   });
 });
 
@@ -408,6 +413,17 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
       dps = gerarDpsAssinada(corpo, src);
       out = await postDps(src, dps.gzip);
       const bruto = typeof out.body === 'string' ? out.body : JSON.stringify(out.body || '');
+      try {
+        ULTIMAS.push({
+          quando: new Date().toISOString(),
+          dps_id: dps.id,
+          http: out.status,
+          payload: corpo,
+          xml: dps.xml,
+          resposta: bruto.slice(0, 3000),
+        });
+        while (ULTIMAS.length > 20) ULTIMAS.shift();
+      } catch (_) { /* ignora */ }
       const erroDeRegra = /E0120|E0600/.test(bruto);
       if ((out.status === 200 || out.status === 201) || !erroDeRegra) break;
     }

@@ -74,7 +74,9 @@ export function buildDpsXml(p) {
   }
 
   const serie = String(p.serie || '1').padStart(5, '0').slice(-5);
-  const numero = String(p.numero || '1');
+  // TSNumDPS nao aceita zeros a esquerda (E1235): normaliza para inteiro
+  const numeroLimpo = digits(p.numero).replace(/^0+/, '') || '1';
+  const numero = String(Number(numeroLimpo));
   const id = idDps({ cLocEmi, tpInsc: 2, inscricao: prestDoc, serie, numero });
 
   const regime = String(prest.op_simples_nacional ?? '2').toUpperCase();
