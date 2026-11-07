@@ -18,6 +18,7 @@ import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import forge from 'node-forge';
+import { gerarDpsAssinada } from './dps.js';
 
 const PORT = process.env.PORT || 8080;
 const API_KEY = process.env.GATEWAY_API_KEY || '';
@@ -369,12 +370,11 @@ app.delete('/certificado/:ref', requireApiKey, (req, res) => {
   res.json({ ok: true, removido: ref });
 });
 
-// Emissao da NFS-e (DPS)
+// Emissao da NFS-e (DPS): envia o XML assinado (gzip), nunca JSON.
 app.post('/nfse/emitir', requireApiKey, async (req, res) => {
   try {
     const src = certSource(req.body);
 
-    // aliquota informada? se nao, tenta a do municipio
     let aliquota_origem = 'payload';
     if (!req.body?.valores?.iss_aliquota) {
       try {
@@ -387,46 +387,66 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
       } catch (_) { /* segue sem aliquota */ }
     }
 
-    const infDPS = buildInfDPS(req.body);
-    const out = await callSefin({ src, method: 'POST', url: '/nfse', data: { infDPS } });
-    const autorizada = out.status === 201 || out.status === 200;
-    const chave = out.body?.chave || out.body?.nfse?.chave || null;
+    if (!req.body.tpAmb) req.body.tpAmb = TP_AMB;
+    const dps = gerarDpsAssinada(req.body, src);
+
+    let out = await postDps(src, dps.gzip, true);
+    if (out.status === 400 || out.status === 415) {
+      out = await postDps(src, Buffer.from(dps.xml, 'utf8'), false);
+    }
+
+    const autorizada = out.status === 200 || out.status === 201;
+    const txt = typeof out.body === 'string' ? out.body : JSON.stringify(out.body || {});
+    const mChave = txt.match(/<chaveAcesso>([^<]+)<\/chaveAcesso>/i) || txt.match(/<chNFSe>([^<]+)<\/chNFSe>/i);
+    const chave = mChave ? mChave[1] : null;
+
+    let erro = null;
+    if (!autorizada) {
+      const c = txt.match(/<codigo>([^<]+)<\/codigo>/i);
+      const d = txt.match(/<descricao>([^<]+)<\/descricao>/i) || txt.match(/<mensagem>([^<]+)<\/mensagem>/i);
+      erro = [c && c[1], d && d[1]].filter(Boolean).join(': ') || txt.slice(0, 500) || ('HTTP ' + out.status);
+    }
+
     let arquivos = null;
     if (autorizada && chave) {
-      try {
-        arquivos = await fetchArquivos(src, chave);
-      } catch (e) {
-        arquivos = { xml: null, pdf_base64: null, pdf_erro: e.message };
-      }
+      try { arquivos = await fetchArquivos(src, chave); }
+      catch (e) { arquivos = { xml: null, pdf_base64: null, pdf_erro: e.message }; }
     }
-    return res.status(autorizada ? 200 : out.status).json({
+
+    return res.status(autorizada ? 200 : 422).json({
       ok: autorizada,
-      ambiente: AMBIENTE,
-      http: out.status,
-      resposta: out.body,
+      dps_id: dps.id,
       chave,
+      xml: (arquivos && arquivos.xml) || txt || null,
+      pdf_base64: arquivos ? arquivos.pdf_base64 : null,
+      pdf_erro: arquivos ? arquivos.pdf_erro : null,
+      erro,
       aliquota_origem,
-      xml: arquivos?.xml || null,
-      pdf_base64: arquivos?.pdf_base64 || null,
-      pdf_erro: arquivos?.pdf_erro || null,
+      http: out.status,
     });
   } catch (e) {
     return res.status(e.status || 500).json({ ok: false, error: e.message });
   }
 });
 
-// Consulta por chave
-app.get('/nfse/status', requireApiKey, async (req, res) => {
-  try {
-    const { chave } = req.query;
-    const src = certSource(req.query);
-    if (!chave) return res.status(400).json({ ok: false, error: 'chave obrigatoria' });
-    const out = await callSefin({ src, method: 'GET', url: `/nfse/${encodeURIComponent(chave)}` });
-    return res.status(out.status).json({ ok: out.status === 200, http: out.status, resposta: out.body });
-  } catch (e) {
-    return res.status(e.status || 500).json({ ok: false, error: e.message });
-  }
-});
+async function postDps(src, body, gzip) {
+  const agent = agentForSource(src);
+  const r = await axios({
+    method: 'POST',
+    url: `${BASE_URL}/nfse`,
+    data: body,
+    httpsAgent: agent,
+    timeout: 60000,
+    validateStatus: () => true,
+    responseType: 'text',
+    headers: {
+      'Content-Type': 'application/xml; charset=utf-8',
+      Accept: 'application/xml, text/xml, */*',
+      ...(gzip ? { 'Content-Encoding': 'gzip' } : {}),
+    },
+  });
+  return { status: r.status, body: r.data };
+}
 
 // Consulta da DPS (usa idDps = municipio + serie + numero, como no padrao)
 app.get('/dps/:id', requireApiKey, async (req, res) => {
