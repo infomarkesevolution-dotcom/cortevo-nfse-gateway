@@ -327,7 +327,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-xml-v1.01-20261107',
+    build: 'dps-xml-v1.01-20261107b',
   });
 });
 
@@ -414,7 +414,7 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
       catch (e) { arquivos = { xml: null, pdf_base64: null, pdf_erro: e.message }; }
     }
 
-    return res.status(autorizada ? 200 : 422).json({
+    return res.status(autorizada ? 200 : (out.status && out.status >= 400 ? out.status : 422)).json({
       ok: autorizada,
       dps_id: dps.id,
       chave,
@@ -422,6 +422,7 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
       pdf_base64: arquivos ? arquivos.pdf_base64 : null,
       pdf_erro: arquivos ? arquivos.pdf_erro : null,
       erro,
+      mensagem: erro,
       aliquota_origem,
       http: out.status,
     });
