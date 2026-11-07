@@ -327,7 +327,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-xml-v1.01-20261107b',
+    build: 'dps-json-v1.01-20261107c',
   });
 });
 
@@ -371,7 +371,7 @@ app.delete('/certificado/:ref', requireApiKey, (req, res) => {
   res.json({ ok: true, removido: ref });
 });
 
-// Emissao da NFS-e (DPS): envia o XML assinado (gzip), nunca JSON.
+// Emissao da NFS-e: POST /nfse com JSON { dpsXmlGZipB64 } (XML assinado, gzip, base64).
 app.post('/nfse/emitir', requireApiKey, async (req, res) => {
   try {
     const src = certSource(req.body);
@@ -391,18 +391,27 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
     if (!req.body.tpAmb) req.body.tpAmb = TP_AMB;
     const dps = gerarDpsAssinada(req.body, src);
 
-    let out = await postDps(src, dps.gzip, true);
-    if (out.status === 400 || out.status === 415) {
-      out = await postDps(src, Buffer.from(dps.xml, 'utf8'), false);
-    }
+    let out = await postDps(src, dps.gzip);
 
     const autorizada = out.status === 200 || out.status === 201;
     const txt = typeof out.body === 'string' ? out.body : JSON.stringify(out.body || {});
-    const mChave = txt.match(/<chaveAcesso>([^<]+)<\/chaveAcesso>/i) || txt.match(/<chNFSe>([^<]+)<\/chNFSe>/i);
-    const chave = mChave ? mChave[1] : null;
 
+    let chave = null;
     let erro = null;
-    if (!autorizada) {
+    try {
+      const j = JSON.parse(txt);
+      chave = (j.nfse && (j.nfse.chaveAcesso || j.nfse.chave)) || j.chaveAcesso || j.chave || null;
+      const e = j.erro || (Array.isArray(j.erros) ? j.erros[0] : null);
+      if (!autorizada && e) erro = [e.codigo, e.descricao || e.mensagem].filter(Boolean).join(': ');
+      if (!erro && !autorizada && (j.codigo || j.descricao)) erro = [j.codigo, j.descricao].filter(Boolean).join(': ');
+      if (!erro && !autorizada && j.mensagem) erro = String(j.mensagem);
+    } catch (_) { /* resposta nao-JSON */ }
+
+    if (!chave) {
+      const mChave = txt.match(/<chaveAcesso>([^<]+)<\/chaveAcesso>/i) || txt.match(/<chNFSe>([^<]+)<\/chNFSe>/i);
+      if (mChave) chave = mChave[1];
+    }
+    if (!autorizada && !erro) {
       const c = txt.match(/<codigo>([^<]+)<\/codigo>/i);
       const d = txt.match(/<descricao>([^<]+)<\/descricao>/i) || txt.match(/<mensagem>([^<]+)<\/mensagem>/i);
       erro = [c && c[1], d && d[1]].filter(Boolean).join(': ') || txt.slice(0, 500) || ('HTTP ' + out.status);
@@ -431,21 +440,18 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
   }
 });
 
-async function postDps(src, body, gzip) {
+async function postDps(src, gzipBuffer) {
   const agent = agentForSource(src);
   const r = await axios({
     method: 'POST',
     url: `${BASE_URL}/nfse`,
-    data: body,
+    data: { dpsXmlGZipB64: gzipBuffer.toString('base64') },
     httpsAgent: agent,
     timeout: 60000,
     validateStatus: () => true,
     responseType: 'text',
-    headers: {
-      'Content-Type': 'application/xml; charset=utf-8',
-      Accept: 'application/xml, text/xml, */*',
-      ...(gzip ? { 'Content-Encoding': 'gzip' } : {}),
-    },
+    transformRequest: [(d) => JSON.stringify(d)],
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
   });
   return { status: r.status, body: r.data };
 }
