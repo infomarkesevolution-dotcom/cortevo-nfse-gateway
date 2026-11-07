@@ -75,7 +75,7 @@ export function buildDpsXml(p) {
     throw Object.assign(new Error('tomador exige CPF ou CNPJ valido'), { status: 400 });
   }
 
-  const serie = String(p.serie || '1');
+  const serie = String(p.serie || '1').padStart(5, '0').slice(-5);
   const numero = String(p.numero || '1');
   const id = idDps({ cLocEmi, tpInsc: 2, inscricao: prestDoc, serie, numero });
 
@@ -95,8 +95,10 @@ export function buildDpsXml(p) {
   // prestador
   const pr = [`<CNPJ>${prestDoc}</CNPJ>`];
   if (prest.inscricao_municipal) pr.push(`<IM>${esc(digits(prest.inscricao_municipal))}</IM>`);
-  if (prest.razao_social) pr.push(`<xNome>${esc(String(prest.razao_social).slice(0, 150))}</xNome>`);
-  if (prest.endereco && prest.endereco.logradouro) {
+  // quando o proprio prestador emite (tpEmit=1), a Sefin recusa xNome/end (E0121/E0128)
+  const emitenteProprio = String(p.tpEmit || '1') === '1';
+  if (prest.razao_social && !emitenteProprio) pr.push(`<xNome>${esc(String(prest.razao_social).slice(0, 150))}</xNome>`);
+  if (prest.endereco && prest.endereco.logradouro && !emitenteProprio) {
     const e = prest.endereco;
     const end = ['<end>'];
     if (e.cep && digits(e.cep).length === 8) {
@@ -188,6 +190,7 @@ export function pemFromPfx(pfxBuffer, passphrase) {
 export function assinarDps(xml, { privateKeyPem, certPem }) {
   const doc = new DOMParser().parseFromString(xml, 'text/xml');
   const sig = new SignedXml({
+    prefix: 'ds',
     privateKey: privateKeyPem,
     publicCert: certPem,
     signatureAlgorithm: 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256',
@@ -215,5 +218,9 @@ export function gerarDpsAssinada(payload, src) {
   const { xml, id } = buildDpsXml(payload);
   const pems = pemFromPfx(src.pfx, src.passphrase);
   const assinada = assinarDps(xml, pems);
-  return { xml: assinada, id, gzip: zlib.gzipSync(Buffer.from(assinada, 'utf8')) };
+  // a Sefin exige declaracao de codificacao UTF-8 (E1229 sem ela)
+  const comDecl = /^<\?xml/i.test(assinada)
+    ? assinada
+    : '<?xml version="1.0" encoding="UTF-8"?>' + assinada;
+  return { xml: comDecl, id, gzip: zlib.gzipSync(Buffer.from(comDecl, 'utf8')) };
 }

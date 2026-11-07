@@ -327,7 +327,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-json-v1.01-20261107c',
+    build: 'dps-json-v1.01-20261107d',
   });
 });
 
@@ -401,8 +401,11 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
     try {
       const j = JSON.parse(txt);
       chave = (j.nfse && (j.nfse.chaveAcesso || j.nfse.chave)) || j.chaveAcesso || j.chave || null;
-      const e = j.erro || (Array.isArray(j.erros) ? j.erros[0] : null);
-      if (!autorizada && e) erro = [e.codigo, e.descricao || e.mensagem].filter(Boolean).join(': ');
+      const lista = j.erros || j.erro || [];
+      const e = Array.isArray(lista) ? (lista[0] || {}) : lista;
+      if (!autorizada && e && Object.keys(e).length) {
+        erro = [e.Codigo || e.codigo, e.Descricao || e.descricao || e.mensagem].filter(Boolean).join(': ');
+      }
       if (!erro && !autorizada && (j.codigo || j.descricao)) erro = [j.codigo, j.descricao].filter(Boolean).join(': ');
       if (!erro && !autorizada && j.mensagem) erro = String(j.mensagem);
     } catch (_) { /* resposta nao-JSON */ }
