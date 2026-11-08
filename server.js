@@ -332,7 +332,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-ok-v1.01-20261108b',
+    build: 'dps-ok-v1.01-20261108c',
   });
 });
 
@@ -424,8 +424,15 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
         });
         while (ULTIMAS.length > 20) ULTIMAS.shift();
       } catch (_) { /* ignora */ }
+      const autorizou = out.status === 200 || out.status === 201;
+      if (autorizou) break;
+
+      // E1235 reclamando do finNFSe: o leiaute diverge entre ambientes
+      if (/finNFSe/i.test(bruto) && !corpo.__alternouFin) {
+        variantes.push({ ...corpo, finNFSe: (corpo.finNFSe === null ? '0' : null), __alternouFin: true });
+      }
       const erroDeRegra = /E0120|E0600/.test(bruto);
-      if ((out.status === 200 || out.status === 201) || !erroDeRegra) break;
+      if (!erroDeRegra && !/finNFSe/i.test(bruto)) break;
     }
 
     const autorizada = out.status === 200 || out.status === 201;

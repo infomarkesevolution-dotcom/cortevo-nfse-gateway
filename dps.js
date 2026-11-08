@@ -93,8 +93,12 @@ export function buildDpsXml(p) {
   partes.push(`<nDPS>${esc(numero)}</nDPS>`);
   partes.push(`<dCompet>${esc(soData(p.competencia))}</dCompet>`);
   partes.push(`<tpEmit>${esc(String(p.tpEmit || '1'))}</tpEmit>`);
-  // finalidade da NFS-e (RTC): 0 = NFS-e regular. Posicao exige vir logo apos tpEmit.
-  partes.push(`<finNFSe>${esc(String(p.finNFSe || '0'))}</finNFSe>`);
+  // finNFSe (finalidade RTC): a producao restrita exige o grupo logo apos tpEmit,
+  // ja a producao ainda usa o leiaute antigo e recusa o campo. Quem decide e o tpAmb.
+  const fin = p.finNFSe === null || p.finNFSe === false
+    ? null
+    : (p.finNFSe !== undefined ? String(p.finNFSe) : (String(p.tpAmb || '1') === '2' ? '0' : null));
+  if (fin !== null) partes.push(`<finNFSe>${esc(fin)}</finNFSe>`);
   partes.push(`<cLocEmi>${esc(cLocEmi)}</cLocEmi>`);
 
   // prestador
