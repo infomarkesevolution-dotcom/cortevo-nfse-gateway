@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
-COPY server.js dps.js ./
+COPY server.js dps.js danfse.js ./
 
 ENV PORT=8080
 ENV CERT_DIR=/data/certs

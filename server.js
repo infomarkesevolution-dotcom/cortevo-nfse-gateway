@@ -13,12 +13,14 @@
  * ------------------------------------------------------------------
  */
 import express from 'express';
+import zlib from 'node:zlib';
 import axios from 'axios';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import forge from 'node-forge';
 import { gerarDpsAssinada } from './dps.js';
+import { gerarDanfsePdf } from './danfse.js';
 
 const PORT = process.env.PORT || 8080;
 const API_KEY = process.env.GATEWAY_API_KEY || '';
@@ -332,7 +334,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-ok-v1.01-20261108f',
+    build: 'dps-ok-v1.01-20261109',
   });
 });
 
@@ -446,8 +448,14 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
 
     let chave = null;
     let erro = null;
+    let xmlOficial = null;
     try {
       const j = JSON.parse(txt);
+      if (j.nfseXmlGZipB64) {
+        try {
+          xmlOficial = zlib.gunzipSync(Buffer.from(j.nfseXmlGZipB64, 'base64')).toString('utf8');
+        } catch (_) { xmlOficial = null; }
+      }
       chave = (j.nfse && (j.nfse.chaveAcesso || j.nfse.chave)) || j.chaveAcesso || j.chave || null;
       const lista = j.erros || j.erro || [];
       const e = Array.isArray(lista) ? (lista[0] || {}) : lista;
@@ -469,18 +477,60 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
     }
 
     let arquivos = null;
-    if (autorizada && chave) {
+    if (autorizada && chave && !xmlOficial) {
       try { arquivos = await fetchArquivos(src, chave); }
       catch (e) { arquivos = { xml: null, pdf_base64: null, pdf_erro: e.message }; }
+    }
+
+    // DANFSE: a API oficial esta suspensa, entao geramos o documento aqui
+    let pdfLocal = null;
+    if (autorizada && chave) {
+      try {
+        const ehCpf = String(req.body?.tomador?.doc || '').replace(/\D/g, '').length === 11;
+        const pdf = await gerarDanfsePdf({
+          chave,
+          numero: String(dps.numero || req.body?.numero || ''),
+          serie: String(dps.serie || req.body?.serie || ''),
+          competencia: req.body?.competencia,
+          emitidaEm: new Date().toISOString(),
+          prestador: {
+            cnpj: req.body?.prestador?.cnpj,
+            razao_social: req.body?.prestador?.razao_social,
+            inscricao_municipal: req.body?.prestador?.inscricao_municipal,
+            municipio: req.body?.prestador?.endereco?.municipio || req.body?.municipio_nome,
+            uf: req.body?.prestador?.endereco?.uf || req.body?.uf,
+          },
+          tomador: {
+            nome: req.body?.tomador?.nome,
+            doc: req.body?.tomador?.doc,
+            email: req.body?.tomador?.email,
+          },
+          servico: {
+            descricao: req.body?.servico?.descricao,
+            codigo_trib_nacional: req.body?.servico?.codigo_trib_nacional,
+          },
+          valores: {
+            total_centavos: req.body?.valores?.total_centavos,
+            iss_valor_centavos: req.body?.valores?.iss_valor_centavos,
+          },
+        });
+        pdfLocal = pdf.toString('base64');
+        void ehCpf;
+      } catch (e) {
+        console.error('falha ao gerar DANFSE local:', e.message);
+      }
     }
 
     return res.status(autorizada ? 200 : (out.status && out.status >= 400 ? out.status : 422)).json({
       ok: autorizada,
       dps_id: dps.id,
       chave,
-      xml: (arquivos && arquivos.xml) || txt || null,
-      pdf_base64: arquivos ? arquivos.pdf_base64 : null,
-      pdf_erro: arquivos ? arquivos.pdf_erro : null,
+      numero: chave ? String(Number(String(dps.numero || '0')) || dps.numero) : null,
+      serie: dps.serie || null,
+      emitida_em: autorizada ? new Date().toISOString() : null,
+      xml: xmlOficial || (arquivos && arquivos.xml) || txt || null,
+      pdf_base64: pdfLocal || (arquivos ? arquivos.pdf_base64 : null),
+      pdf_erro: pdfLocal ? null : (arquivos ? arquivos.pdf_erro : null),
       erro,
       mensagem: erro,
       aliquota_origem,

@@ -265,12 +265,12 @@ export function assinarDps(xmlOuInf, { privateKeyPem, certPem }) {
 
 /** Gera a DPS assinada e comprimida (gzip), pronta para POST /nfse */
 export function gerarDpsAssinada(payload, src) {
-  const { infCanon, id } = buildDpsXml(payload);
+  const { infCanon, id, serie, numero } = buildDpsXml(payload);
   const pems = pemFromPfx(src.pfx, src.passphrase);
   const assinada = assinarDps(infCanon, pems);
   // a Sefin exige declaracao de codificacao UTF-8 (E1229 sem ela)
   const comDecl = /^<\?xml/i.test(assinada)
     ? assinada
     : '<?xml version="1.0" encoding="UTF-8"?>' + assinada;
-  return { xml: comDecl, id, gzip: zlib.gzipSync(Buffer.from(comDecl, 'utf8')) };
+  return { xml: comDecl, id, serie, numero, gzip: zlib.gzipSync(Buffer.from(comDecl, 'utf8')) };
 }
