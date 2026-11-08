@@ -27,9 +27,15 @@ function dec(v) {
   return Number(v || 0).toFixed(2);
 }
 
-function soData(v) {
-  const s = String(v || '').slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : new Date().toISOString().slice(0, 10);
+function soData(v, limite) {
+  const bruto = String(v || '').trim();
+  let s = '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(bruto.slice(0, 10))) s = bruto.slice(0, 10);
+  else if (/^\d{4}-\d{2}$/.test(bruto.slice(0, 7))) s = bruto.slice(0, 7) + '-01'; // competencia mensal
+  else s = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10); // data de Brasilia
+  // E0015: competencia nao pode ser posterior a emissao
+  if (limite && s > limite) s = limite;
+  return s;
 }
 
 function soDh(v) {
@@ -87,11 +93,12 @@ export function buildDpsXml(p) {
 
   const partes = [];
   partes.push(`<tpAmb>${esc(p.tpAmb || '1')}</tpAmb>`);
-  partes.push(`<dhEmi>${esc(soDh(p.dhEmi))}</dhEmi>`);
+  const dhEmi = soDh(p.dhEmi);
+  partes.push(`<dhEmi>${esc(dhEmi)}</dhEmi>`);
   partes.push(`<verAplic>${esc('Cortevo-1.0')}</verAplic>`);
   partes.push(`<serie>${esc(serie)}</serie>`);
   partes.push(`<nDPS>${esc(numero)}</nDPS>`);
-  partes.push(`<dCompet>${esc(soData(p.competencia))}</dCompet>`);
+  partes.push(`<dCompet>${esc(soData(p.competencia, dhEmi.slice(0, 10)))}</dCompet>`);
   partes.push(`<tpEmit>${esc(String(p.tpEmit || '1'))}</tpEmit>`);
   // finNFSe (finalidade RTC): a producao restrita exige o grupo logo apos tpEmit,
   // ja a producao ainda usa o leiaute antigo e recusa o campo. Quem decide e o tpAmb.
