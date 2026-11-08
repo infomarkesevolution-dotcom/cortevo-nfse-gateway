@@ -152,7 +152,16 @@ export function buildDpsXml(p) {
 
   // valores
   const aliq = permiteAliquota ? Number(val.iss_aliquota || 0) : 0;
-  const v = ['<vServPrest>', `<vServ>${dec(val.total_centavos)}</vServ>`, '</vServPrest>'];
+  // total_centavos vem em centavos (8500 = R$ 85,00). Antes usavamos o valor cru
+  // e a nota saia 100x maior.
+  const temCentavos = val.total_centavos !== undefined && val.total_centavos !== null && val.total_centavos !== '';
+  const vServReais = temCentavos
+    ? Number(String(val.total_centavos).replace(',', '.')) / 100
+    : Number(String(val.total ?? val.valor ?? 0).replace(',', '.'));
+  if (!Number.isFinite(vServReais) || vServReais <= 0) {
+    throw Object.assign(new Error('valor do servico invalido'), { status: 400 });
+  }
+  const v = ['<vServPrest>', `<vServ>${dec(vServReais)}</vServ>`, '</vServPrest>'];
   v.push('<trib><tribMun>');
   v.push('<tribISSQN>1</tribISSQN>');
   v.push('<tpRetISSQN>1</tpRetISSQN>');
