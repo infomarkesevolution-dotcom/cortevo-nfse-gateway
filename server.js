@@ -332,7 +332,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-ok-v1.01-20261108e',
+    build: 'dps-ok-v1.01-20261108f',
   });
 });
 
@@ -431,8 +431,14 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
       if (/finNFSe/i.test(bruto) && !corpo.__alternouFin) {
         variantes.push({ ...corpo, finNFSe: (corpo.finNFSe === null ? '0' : null), __alternouFin: true });
       }
+      // E0014 = serie/numero ja usados: o app nao controla bem o contador,
+      // entao seguimos para o proximo numero livre (nunca duplica nota).
+      if (/E0014/.test(bruto) && (corpo.__tentativasNumero || 0) < 10) {
+        const prox = String(Number(String(corpo.numero || '0').replace(/\D/g, '') || 0) + 1);
+        variantes.push({ ...corpo, numero: prox, __tentativasNumero: (corpo.__tentativasNumero || 0) + 1 });
+      }
       const erroDeRegra = /E0120|E0600/.test(bruto);
-      if (!erroDeRegra && !/finNFSe/i.test(bruto)) break;
+      if (!erroDeRegra && !/finNFSe/i.test(bruto) && !/E0014/.test(bruto)) break;
     }
 
     const autorizada = out.status === 200 || out.status === 201;
