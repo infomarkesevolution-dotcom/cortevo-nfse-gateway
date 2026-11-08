@@ -21,6 +21,8 @@ import path from 'node:path';
 import forge from 'node-forge';
 import { gerarDpsAssinada } from './dps.js';
 import { gerarDanfsePdf } from './danfse.js';
+import { montarEventoCancelamento } from './evento.js';
+import { pemFromPfx } from './dps.js';
 
 const PORT = process.env.PORT || 8080;
 const API_KEY = process.env.GATEWAY_API_KEY || '';
@@ -334,7 +336,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-ok-v1.01-20261110',
+    build: 'dps-ok-v1.01-20261111',
   });
 });
 
@@ -592,23 +594,121 @@ app.get('/dps/:id', requireApiKey, async (req, res) => {
 // Cancelamento
 app.post('/nfse/cancelar', requireApiKey, async (req, res) => {
   try {
-    const { chave, motivo } = req.body || {};
-    const src = certSource(req.body);
-    if (!chave || !motivo) {
-      return res.status(400).json({ ok: false, error: 'chave e motivo obrigatorios' });
+    const b = req.body || {};
+    const src = certSource(b);
+
+    // aceita os nomes de campo que o app possa mandar
+    const chave = soDigitosCancelar(b.chave || b.chave_acesso || b.chaveAcesso || b.nfse_chave || b.chNFSe);
+    const motivo = String(b.motivo || b.justificativa || b.razao || b.motivo_cancelamento || '').trim();
+    const codigoMotivo = String(b.codigo_motivo || b.cMotivo || '9');
+
+    if (!chave) {
+      return res.status(400).json({
+        ok: false,
+        error: 'informe a chave de acesso da NFS-e (campo "chave") para cancelar',
+        faltando: ['chave'],
+      });
     }
-    const data = { evento: { cMotivo: '9', xMotivo: String(motivo).slice(0, 255) } };
-    const out = await callSefin({
-      src,
-      method: 'POST',
-      url: `/nfse/${encodeURIComponent(chave)}/cancelamento`,
-      data,
+    if (!motivo) {
+      return res.status(400).json({
+        ok: false,
+        error: 'informe o motivo do cancelamento (campo "motivo", minimo 15 caracteres)',
+        faltando: ['motivo'],
+      });
+    }
+
+    const cnpjAutor = soDigitosCancelar(b.cnpj || b.prestador?.cnpj || b.cnpj_autor || '');
+    const pems = pemDoCertificado(b);
+    const evt = montarEventoCancelamento({
+      chave,
+      motivo,
+      codigoMotivo,
+      tpAmb: b.tpAmb || (AMBIENTE === 'restrita' ? '2' : '1'),
+      cnpjAutor,
+      certPem: pems.certPem,
+      privateKeyPem: pems.privateKeyPem,
     });
-    return res.status(out.status).json({ ok: out.status === 200, http: out.status, resposta: out.body });
+
+    const gzEvento = zlib.gzipSync(Buffer.from(evt.xml, 'utf8')).toString('base64');
+    const corpo = { pedidoRegistroEventoXmlGZipB64: gzEvento };
+
+    let out = await postEvento(src, chave, corpo);
+    let texto = typeof out.body === 'string' ? out.body : JSON.stringify(out.body || '');
+    // se o nome do campo do envelope estiver diferente, tenta as variantes
+    if (out.status === 400 && /desconhecid|required|obrigat|not provided|Unrecognized/i.test(texto)) {
+      for (const campo of ['pedRegEventoXmlGZipB64', 'eventoXmlGZipB64', 'pedRegEventoGZipB64']) {
+        const alt = await postEvento(src, chave, { [campo]: gzEvento });
+        if (alt.status !== 400) { out = alt; texto = typeof alt.body === 'string' ? alt.body : JSON.stringify(alt.body || ''); break; }
+      }
+    }
+
+    try {
+      ULTIMAS.push({
+        quando: new Date().toISOString(),
+        rota: 'cancelar',
+        http: out.status,
+        chave: evt.chave,
+        motivo: motivo.slice(0, 120),
+        campos_recebidos: Object.keys(b).filter((k) => k !== 'pfx_base64' && k !== 'senha'),
+        resposta: texto.slice(0, 1500),
+      });
+      while (ULTIMAS.length > 20) ULTIMAS.shift();
+    } catch (_) { /* ignora */ }
+
+    const ok = out.status === 200 || out.status === 201 || out.status === 204;
+    let erro = null;
+    if (!ok) {
+      try {
+        const j = JSON.parse(texto);
+        const lista = j.erros || j.erro || [];
+        const e = Array.isArray(lista) ? (lista[0] || {}) : lista;
+        erro = [e.Codigo || e.codigo, e.Descricao || e.descricao || e.mensagem].filter(Boolean).join(': ') || texto.slice(0, 400);
+      } catch (_) {
+        erro = texto.slice(0, 400) || `HTTP ${out.status}`;
+      }
+    }
+
+    return res.status(ok ? 200 : (out.status >= 400 ? out.status : 422)).json({
+      ok,
+      http: out.status,
+      chave: evt.chave,
+      evento: evt.tpEvento,
+      erro,
+      mensagem: erro,
+      resposta: texto.slice(0, 2000),
+    });
   } catch (e) {
     return res.status(e.status || 500).json({ ok: false, error: e.message });
   }
 });
+
+async function postEvento(src, chave, corpo) {
+  const agent = agentForSource(src);
+  const r = await axios({
+    method: 'POST',
+    url: `${BASE_URL}/nfse/${encodeURIComponent(chave)}/eventos`,
+    data: corpo,
+    httpsAgent: agent,
+    timeout: 60000,
+    validateStatus: () => true,
+    responseType: 'text',
+    transformRequest: [(d) => JSON.stringify(d)],
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+  });
+  return { status: r.status, body: r.data };
+}
+
+function soDigitosCancelar(v) {
+  return String(v || '').replace(/\D/g, '');
+}
+
+/** extrai chave privada + cert do pfx/base64 ou do cert_ref (mesma logica da emissao) */
+function pemDoCertificado(input) {
+  const src = certSource(input);
+  if (src.pfx) return pemFromPfx(src.pfx, src.passphrase);
+  throw Object.assign(new Error('certificado nao informado (pfx_base64 + senha)'), { status: 400 });
+}
+
 
 // XML + DANFSE (PDF) de uma nota ja autorizada
 const arquivosHandler = async (req, res) => {
