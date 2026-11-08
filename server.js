@@ -334,7 +334,7 @@ app.get('/health', (_req, res) => {
     base: BASE_URL,
     tenants: fs.readdirSync(CERT_DIR).filter((f) => f.endsWith('.pfx')).length,
     stateless: process.env.GATEWAY_STATELESS === '1',
-    build: 'dps-ok-v1.01-20261109',
+    build: 'dps-ok-v1.01-20261110',
   });
 });
 
@@ -486,36 +486,57 @@ app.post('/nfse/emitir', requireApiKey, async (req, res) => {
     let pdfLocal = null;
     if (autorizada && chave) {
       try {
-        const ehCpf = String(req.body?.tomador?.doc || '').replace(/\D/g, '').length === 11;
+        const pr = req.body?.prestador || {};
+        const tm = req.body?.tomador || {};
+        const sv = req.body?.servico || {};
+        const vl = req.body?.valores || {};
+        const mun = [req.body?.municipio_nome, req.body?.uf].filter(Boolean).join(' - ');
+        const enderecoPrestador = pr.endereco
+          ? [pr.endereco.logradouro, pr.endereco.numero, pr.endereco.bairro].filter(Boolean).join(', ')
+          : '';
+        const enderecoTomador = tm.endereco
+          ? [tm.endereco.logradouro, tm.endereco.numero, tm.endereco.bairro].filter(Boolean).join(', ')
+          : '';
         const pdf = await gerarDanfsePdf({
           chave,
           numero: String(dps.numero || req.body?.numero || ''),
           serie: String(dps.serie || req.body?.serie || ''),
           competencia: req.body?.competencia,
           emitidaEm: new Date().toISOString(),
+          municipio: mun,
+          observacoes: req.body?.observacoes || '',
           prestador: {
-            cnpj: req.body?.prestador?.cnpj,
-            razao_social: req.body?.prestador?.razao_social,
-            inscricao_municipal: req.body?.prestador?.inscricao_municipal,
-            municipio: req.body?.prestador?.endereco?.municipio || req.body?.municipio_nome,
-            uf: req.body?.prestador?.endereco?.uf || req.body?.uf,
+            cnpj: pr.cnpj,
+            razao_social: pr.razao_social,
+            inscricao_municipal: pr.inscricao_municipal,
+            op_simples_nacional: pr.op_simples_nacional,
+            endereco: enderecoPrestador,
+            email: pr.email,
           },
           tomador: {
-            nome: req.body?.tomador?.nome,
-            doc: req.body?.tomador?.doc,
-            email: req.body?.tomador?.email,
+            nome: tm.nome,
+            doc: tm.doc,
+            email: tm.email,
+            endereco: enderecoTomador,
+            municipio: tm.municipio || '',
           },
           servico: {
-            descricao: req.body?.servico?.descricao,
-            codigo_trib_nacional: req.body?.servico?.codigo_trib_nacional,
+            descricao: sv.descricao,
+            codigo_trib_nacional: sv.codigo_trib_nacional,
+            codigo_trib_municipal: sv.codigo_trib_municipal,
           },
           valores: {
-            total_centavos: req.body?.valores?.total_centavos,
-            iss_valor_centavos: req.body?.valores?.iss_valor_centavos,
+            total_centavos: vl.total_centavos,
+            iss_aliquota: vl.iss_aliquota,
+            iss_valor_centavos: vl.iss_valor_centavos,
+            desconto_centavos: vl.desconto_centavos,
+            irrf_centavos: vl.irrf_centavos,
+            cp_centavos: vl.cp_centavos,
+            csll_centavos: vl.csll_centavos,
+            outras_retencoes_centavos: vl.outras_retencoes_centavos,
           },
         });
         pdfLocal = pdf.toString('base64');
-        void ehCpf;
       } catch (e) {
         console.error('falha ao gerar DANFSE local:', e.message);
       }
